@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON to PostgreSQL Converter</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .field-row {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+            gap: 10px;
+        }
+        .output {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+        }
+        input[type="text"], select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 4px 0;
+        }
+        button {
+            background: #0066cc;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        button:hover {
+            background: #0052a3;
+        }
+        .section {
+            margin: 20px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>JSON to PostgreSQL Converter</h1>
+        
+        <div class="section">
+            <input type="file" id="jsonFile" accept=".json">
+        </div>
+
+        <div class="section">
+            <label>Schema Name (optional):</label>
+            <input type="text" id="schemaName" placeholder="public">
+            <label>Table Name:</label>
+            <input type="text" id="tableName" value="my_table">
+        </div>
+
+        <div id="fieldSelection" class="section">
+            <!-- Field selection will be dynamically populated -->
+        </div>
+
+        <div class="section">
+            <button onclick="generateSQL()">Generate SQL</button>
+            <button onclick="copyToClipboard()">Copy to Clipboard</button>
+            <button onclick="downloadSQL()">Download SQL</button>
+        </div>
+
+        <div class="section">
+            <div id="output" class="output"></div>
+        </div>
+    </div>
+
+    <script>
+        let jsonData = null;
+        let selectedFields = {};
+        let fieldMappings = {};
+        let fieldTypes = {};
+
+        document.getElementById('jsonFile').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        jsonData = JSON.parse(e.target.result);
+                        if (Array.isArray(jsonData) && jsonData.length > 0) {
+                            populateFieldSelection(jsonData[0]);
+                        }
+                    } catch (error) {
+                        alert('Error parsing JSON file');
+                        console.error(error);
+                    }
+                };
+                reader.readAsText(file);
+            }
+        });
+
+        function inferPostgresType(value) {
+            if (typeof value === 'number') {
+                return Number.isInteger(value) ? 'INTEGER' : 'NUMERIC';
+            } else if (typeof value === 'boolean') {
+                return 'BOOLEAN';
+            } else if (value instanceof Date) {
+                return 'TIMESTAMP';
+            } else {
+                return 'TEXT';
+            }
+        }
+
+        function populateFieldSelection(firstRow) {
+            const container = document.getElementById('fieldSelection');
+            container.innerHTML = '<h3>Select and Rename Fields:</h3>';
+
+            Object.entries(firstRow).forEach(([field, value]) => {
+                selectedFields[field] = true;
+                fieldMappings[field] = field;
+                fieldTypes[field] = inferPostgresType(value);
+
+                const row = document.createElement('div');
+                row.className = 'field-row';
+                
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = true;
+                checkbox.onchange = () => selectedFields[field] = checkbox.checked;
+
+                const nameInput = document.createElement('input');
+                nameInput.type = 'text';
+                nameInput.value = field;
+                nameInput.onchange = () => fieldMappings[field] = nameInput.value;
+
+                const typeSelect = document.createElement('select');
+                ['TEXT', 'INTEGER', 'NUMERIC', 'BOOLEAN', 'TIMESTAMP', 'JSON'].forEach(type => {
+                    const option = document.createElement('option');
+                    option.value = type;
+                    option.text = type;
+                    if (type === fieldTypes[field]) {
+                        option.selected = true;
+                    }
+                    typeSelect.appendChild(option);
+                });
+                typeSelect.onchange = () => fieldTypes[field] = typeSelect.value;
+
+                row.appendChild(checkbox);
+                row.appendChild(nameInput);
+                row.appendChild(typeSelect);
+                container.appendChild(row);
+            });
+        }
+
+        function generateSQL() {
+            if (!jsonData) return;
+
+            const schemaName = document.getElementById('schemaName').value.trim();
+            const tableName = document.getElementById('tableName').value;
+            const fullTableName = schemaName ? `${schemaName}.${tableName}` : tableName;
+
+            const selectedFieldNames = Object.entries(selectedFields)
+                .filter(([_, selected]) => selected)
+                .map(([field, _]) => ({
+                    original: field,
+                    mapped: fieldMappings[field],
+                    type: fieldTypes[field]
+                }));
+
+            const createTable = `CREATE TABLE IF NOT EXISTS ${fullTableName} (
+    ${selectedFieldNames.map(field => `${field.mapped} ${field.type}`).join(',\n    ')}
+);`;
+
+            const insertStatements = jsonData.map(row => {
+                const fields = selectedFieldNames.map(f => f.original);
+                const mappedFields = selectedFieldNames.map(f => f.mapped);
+
+                const values = fields.map((field, index) => {
+                    const value = row[field];
+                    const type = fieldTypes[field];
+
+                    if (value === null || value === undefined) {
+                        return 'NULL';
+                    }
+
+                    switch (type) {
+                        case 'INTEGER':
+                        case 'NUMERIC':
+                            return value.toString();
+                        case 'BOOLEAN':
+                            return value.toString();
+                        case 'JSON':
+                            return `'${JSON.stringify(value)}'::json`;
+                        default:
+                            return `'${value.toString().replace(/'/g, "''")}'`;
+                    }
+                });
+
+                return `INSERT INTO ${fullTableName} (${mappedFields.join(', ')})
+VALUES (${values.join(', ')});`;
+            });
+
+            const sql = `${createTable}\n\n${insertStatements.join('\n')}`;
+            document.getElementById('output').textContent = sql;
+        }
+
+        function copyToClipboard() {
+            const output = document.getElementById('output');
+            navigator.clipboard.writeText(output.textContent);
+        }
+
+        function downloadSQL() {
+            const output = document.getElementById('output');
+            const tableName = document.getElementById('tableName').value;
+            const blob = new Blob([output.textContent], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${tableName}_insert.sql`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }
+    </script>
+</body>
+</html>
