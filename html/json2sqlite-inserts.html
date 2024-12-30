@@ -30,7 +30,7 @@
             white-space: pre-wrap;
             overflow-x: auto;
         }
-        input[type="text"] {
+        input[type="text"], select {
             padding: 8px;
             border: 1px solid #ddd;
             border-radius: 4px;
@@ -85,6 +85,7 @@
         let jsonData = null;
         let selectedFields = {};
         let fieldMappings = {};
+        let fieldTypes = {};
 
         document.getElementById('jsonFile').addEventListener('change', function(event) {
             const file = event.target.files[0];
@@ -105,13 +106,26 @@
             }
         });
 
+        function inferSQLiteType(value) {
+            if (typeof value === 'number') {
+                return Number.isInteger(value) ? 'INTEGER' : 'REAL';
+            } else if (typeof value === 'boolean') {
+                return 'INTEGER'; // SQLite doesn't have boolean, use INTEGER
+            } else if (value instanceof Date) {
+                return 'TEXT'; // Store dates as TEXT in SQLite
+            } else {
+                return 'TEXT';
+            }
+        }
+
         function populateFieldSelection(firstRow) {
             const container = document.getElementById('fieldSelection');
             container.innerHTML = '<h3>Select and Rename Fields:</h3>';
 
-            Object.keys(firstRow).forEach(field => {
+            Object.entries(firstRow).forEach(([field, value]) => {
                 selectedFields[field] = true;
                 fieldMappings[field] = field;
+                fieldTypes[field] = inferSQLiteType(value);
 
                 const row = document.createElement('div');
                 row.className = 'field-row';
@@ -121,13 +135,26 @@
                 checkbox.checked = true;
                 checkbox.onchange = () => selectedFields[field] = checkbox.checked;
 
-                const input = document.createElement('input');
-                input.type = 'text';
-                input.value = field;
-                input.onchange = () => fieldMappings[field] = input.value;
+                const nameInput = document.createElement('input');
+                nameInput.type = 'text';
+                nameInput.value = field;
+                nameInput.onchange = () => fieldMappings[field] = nameInput.value;
+
+                const typeSelect = document.createElement('select');
+                ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'].forEach(type => {
+                    const option = document.createElement('option');
+                    option.value = type;
+                    option.text = type;
+                    if (type === fieldTypes[field]) {
+                        option.selected = true;
+                    }
+                    typeSelect.appendChild(option);
+                });
+                typeSelect.onchange = () => fieldTypes[field] = typeSelect.value;
 
                 row.appendChild(checkbox);
-                row.appendChild(input);
+                row.appendChild(nameInput);
+                row.appendChild(typeSelect);
                 container.appendChild(row);
             });
         }
@@ -138,25 +165,40 @@
             const tableName = document.getElementById('tableName').value;
             const selectedFieldNames = Object.entries(selectedFields)
                 .filter(([_, selected]) => selected)
-                .map(([field, _]) => fieldMappings[field]);
+                .map(([field, _]) => ({
+                    original: field,
+                    mapped: fieldMappings[field],
+                    type: fieldTypes[field]
+                }));
 
             const createTable = `CREATE TABLE IF NOT EXISTS ${tableName} (
-    ${selectedFieldNames.map(field => `${field} TEXT`).join(',\n    ')}
+    ${selectedFieldNames.map(field => `${field.mapped} ${field.type}`).join(',\n    ')}
 );`;
 
             const insertStatements = jsonData.map(row => {
-                const fields = Object.entries(selectedFields)
-                    .filter(([_, selected]) => selected)
-                    .map(([field, _]) => field);
+                const fields = selectedFieldNames.map(f => f.original);
+                const mappedFields = selectedFieldNames.map(f => f.mapped);
 
-                const values = fields.map(field => {
+                const values = fields.map((field, index) => {
                     const value = row[field];
-                    return typeof value === 'string' ? 
-                        `'${value.replace(/'/g, "''")}'` : 
-                        `'${value}'`;
+                    const type = fieldTypes[field];
+
+                    if (value === null || value === undefined) {
+                        return 'NULL';
+                    }
+
+                    switch (type) {
+                        case 'INTEGER':
+                            return typeof value === 'boolean' ? (value ? '1' : '0') : value.toString();
+                        case 'REAL':
+                        case 'NUMERIC':
+                            return value.toString();
+                        default:
+                            return `'${value.toString().replace(/'/g, "''")}'`;
+                    }
                 });
 
-                return `INSERT INTO ${tableName} (${fields.map(f => fieldMappings[f]).join(', ')})
+                return `INSERT INTO ${tableName} (${mappedFields.join(', ')})
 VALUES (${values.join(', ')});`;
             });
 
