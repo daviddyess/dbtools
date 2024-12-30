@@ -73,6 +73,7 @@
         <div class="section">
             <button onclick="generateSQL()">Generate SQL</button>
             <button onclick="copyToClipboard()">Copy to Clipboard</button>
+            <button onclick="downloadSQL()">Download SQL</button>
         </div>
 
         <div class="section">
@@ -166,6 +167,20 @@ VALUES (${values.join(', ')});`;
         function copyToClipboard() {
             const output = document.getElementById('output');
             navigator.clipboard.writeText(output.textContent);
+        }
+
+        function downloadSQL() {
+            const output = document.getElementById('output');
+            const tableName = document.getElementById('tableName').value;
+            const blob = new Blob([output.textContent], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${tableName}_insert.sql`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
         }
     </script>
 </body>
