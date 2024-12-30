@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JSON to SQLite Batched Converter</title>
+    <style>
+        body {
+            font-family: system-ui, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .field-row {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+            gap: 10px;
+        }
+        .output {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 4px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+        }
+        input[type="text"], input[type="number"], select {
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin: 4px 0;
+        }
+        button {
+            background: #0066cc;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 0;
+        }
+        button:hover {
+            background: #0052a3;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .section {
+            margin: 20px 0;
+        }
+        .stats-panel {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 10px;
+        }
+        .stat-item {
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            font-size: 1.1em;
+            font-weight: 500;
+            color: #333;
+        }
+        .warning {
+            background: #fff3cd;
+            color: #856404;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .batch-controls {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+        .batch-status {
+            margin-top: 15px;
+            padding: 10px;
+            background: #e9ecef;
+            border-radius: 4px;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 20px;
+            background-color: #f0f0f0;
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-bar-fill {
+            height: 100%;
+            background-color: #4CAF50;
+            transition: width 0.3s ease;
+        }
+        .batch-list {
+            margin-top: 15px;
+        }
+        .batch-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: white;
+            border-radius: 4px;
+            margin: 5px 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>JSON to SQLite Batched Converter</h1>
+        
+        <div class="section">
+            <input type="file" id="jsonFile" accept=".json">
+        </div>
+
+        <div class="stats-panel" id="statsPanel" style="display: none;">
+            <h3>Data Statistics</h3>
+            <div class="stats-grid" id="statsGrid">
+                <!-- Stats will be populated here -->
+            </div>
+        </div>
+
+        <div class="section">
+            <label>Table Name:</label>
+            <input type="text" id="tableName" value="my_table">
+        </div>
+
+        <div class="batch-controls">
+            <h3>Batch Processing Settings</h3>
+            <div class="field-row">
+                <label>Rows per batch:</label>
+                <input type="number" id="batchSize" value="1000" min="1">
+            </div>
+            <div id="batchProgress" style="display: none;">
+                <div class="progress-bar">
+                    <div class="progress-bar-fill" id="progressBarFill"></div>
+                </div>
+                <div id="batchStatus"></div>
+            </div>
+            <div id="batchList" class="batch-list">
+                <!-- Generated batches will be listed here -->
+            </div>
+        </div>
+
+        <div id="fieldSelection" class="section">
+            <!-- Field selection will be dynamically populated -->
+        </div>
+
+        <div class="section">
+            <button onclick="generateSQL()" id="generateButton">Generate SQL</button>
+            <button onclick="copyToClipboard()" id="copyButton" disabled>Copy to Clipboard</button>
+            <button onclick="downloadSQL()" id="downloadButton" disabled>Download SQL</button>
+            <button onclick="downloadAllBatches()" id="downloadAllButton" disabled>Download All Batches</button>
+        </div>
+
+        <div class="section">
+            <div id="output" class="output"></div>
+        </div>
+    </div>
+
+    <script>
+        let jsonData = null;
+        let selectedFields = {};
+        let fieldMappings = {};
+        let fieldTypes = {};
+        let generatedBatches = [];
+        let currentBatchIndex = 0;
+
+        function updateStats() {
+            if (!jsonData || !Array.isArray(jsonData)) return;
+
+            const statsPanel = document.getElementById('statsPanel');
+            const statsGrid = document.getElementById('statsGrid');
+            const existingWarnings = statsPanel.querySelectorAll('.warning');
+            // Remove existing warnings
+            existingWarnings.forEach(warning => warning.remove());
+
+            statsPanel.style.display = 'block';
+            statsGrid.innerHTML = '';
+
+            const stats = [
+                {
+                    label: 'Total Rows',
+                    value: jsonData.length
+                },
+                {
+                    label: 'Total Fields',
+                    value: Object.keys(jsonData[0] || {}).length
+                },
+                {
+                    label: 'Selected Fields',
+                    value: Object.values(selectedFields).filter(v => v).length
+                },
+                {
+                    label: 'Estimated Batches',
+                    value: Math.ceil(jsonData.length / parseInt(document.getElementById('batchSize').value))
+                }
+            ];
+
+            const jsonSize = new Blob([JSON.stringify(jsonData)]).size;
+            stats.push({
+                label: 'JSON Size',
+                value: formatBytes(jsonSize)
+            });
+
+            const typeDistribution = {};
+            Object.values(fieldTypes).forEach(type => {
+                typeDistribution[type] = (typeDistribution[type] || 0) + 1;
+            });
+            
+            const nullCounts = {};
+            Object.keys(jsonData[0] || {}).forEach(field => {
+                nullCounts[field] = jsonData.filter(row => row[field] === null || row[field] === undefined).length;
+            });
+            
+            const fieldsWithNulls = Object.entries(nullCounts)
+                .filter(([_, count]) => count > 0)
+                .length;
+            
+            if (fieldsWithNulls > 0) {
+                stats.push({
+                    label: 'Fields with NULL values',
+                    value: fieldsWithNulls
+                });
+            }
+
+            Object.keys(jsonData[0] || {}).forEach(field => {
+                if (!selectedFields[field]) return; // Skip if field is not selected
+                
+                const uniqueValues = new Set(jsonData.map(row => row[field])).size;
+                if (uniqueValues === jsonData.length && jsonData.length > 1) {
+                    const warning = document.createElement('div');
+                    warning.className = 'warning';
+                    warning.textContent = `Field '${fieldMappings[field]}' contains all unique values - potential key field`;
+                    statsPanel.appendChild(warning);
+                }
+            });
+
+            stats.forEach(stat => {
+                const statItem = document.createElement('div');
+                statItem.className = 'stat-item';
+                statItem.innerHTML = `
+                    <div class="stat-label">${stat.label}</div>
+                    <div class="stat-value">${stat.value}</div>
+                `;
+                statsGrid.appendChild(statItem);
+            });
+
+            Object.entries(typeDistribution).forEach(([type, count]) => {
+                const statItem = document.createElement('div');
+                statItem.className = 'stat-item';
+                statItem.innerHTML = `
+                    <div class="stat-label">Fields of type ${type}</div>
+                    <div class="stat-value">${count}</div>
+                `;
+                statsGrid.appendChild(statItem);
+            });
+        }
+
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+        }
+
+        document.getElementById('jsonFile').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    try {
+                        jsonData = JSON.parse(e.target.result);
+                        if (Array.isArray(jsonData) && jsonData.length > 0) {
+                            populateFieldSelection(jsonData[0]);
+                            updateStats();
+                        }
+                    } catch (error) {
+                        alert('Error parsing JSON file');
+                        console.error(error);
+                    }
+                };
+                reader.readAsText(file);
+            }
+        });
+
+        function inferSQLiteType(value) {
+            if (typeof value === 'number') {
+                return Number.isInteger(value) ? 'INTEGER' : 'REAL';
+            } else if (typeof value === 'boolean') {
+                return 'INTEGER';
+            } else if (value instanceof Date) {
+                return 'TEXT';
+            } else {
+                return 'TEXT';
+            }
+        }
+
+        function populateFieldSelection(firstRow) {
+            const container = document.getElementById('fieldSelection');
+            container.innerHTML = '<h3>Select and Rename Fields:</h3>';
+
+            Object.entries(firstRow).forEach(([field, value]) => {
+                selectedFields[field] = true;
+                fieldMappings[field] = field;
+                fieldTypes[field] = inferSQLiteType(value);
+
+                const row = document.createElement('div');
+                row.className = 'field-row';
+                
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.checked = true;
+                checkbox.onchange = () => {
+                    selectedFields[field] = checkbox.checked;
+                    updateStats();
+                };
+
+                const nameInput = document.createElement('input');
+                nameInput.type = 'text';
+                nameInput.value = field;
+                nameInput.onchange = () => {
+                    fieldMappings[field] = nameInput.value;
+                    updateStats();
+                }
+
+                const typeSelect = document.createElement('select');
+                ['TEXT', 'INTEGER', 'REAL', 'BLOB', 'NUMERIC'].forEach(type => {
+                    const option = document.createElement('option');
+                    option.value = type;
+                    option.text = type;
+                    if (type === fieldTypes[field]) {
+                        option.selected = true;
+                    }
+                    typeSelect.appendChild(option);
+                });
+                typeSelect.onchange = () => {
+                    fieldTypes[field] = typeSelect.value;
+                    updateStats();
+                };
+
+                row.appendChild(checkbox);
+                row.appendChild(nameInput);
+                row.appendChild(typeSelect);
+                container.appendChild(row);
+            });
+        }
+
+        function generateCreateTableSQL() {
+            const tableName = document.getElementById('tableName').value;
+            const selectedFieldNames = Object.entries(selectedFields)
+                .filter(([_, selected]) => selected)
+                .map(([field, _]) => ({
+                    original: field,
+                    mapped: fieldMappings[field],
+                    type: fieldTypes[field]
+                }));
+
+            return `CREATE TABLE IF NOT EXISTS ${tableName} (
+    ${selectedFieldNames.map(field => `${field.mapped} ${field.type}`).join(',\n    ')}
+);`;
+        }
+
+        function generateInsertSQL(rows) {
+            const tableName = document.getElementById('tableName').value;
+            const selectedFieldNames = Object.entries(selectedFields)
+                .filter(([_, selected]) => selected)
+                .map(([field, _]) => ({
+                    original: field,
+                    mapped: fieldMappings[field],
+                    type: fieldTypes[field]
+                }));
+
+            const fields = selectedFieldNames.map(f => f.original);
+            const mappedFields = selectedFieldNames.map(f => f.mapped);
+            
+            // Start transaction for better performance
+            let sql = 'BEGIN TRANSACTION;\n\n';
+            
+            // Generate bulk inserts in chunks of 100 rows
+            const CHUNK_SIZE = 100;
+            for (let i = 0; i < rows.length; i += CHUNK_SIZE) {
+                const chunk = rows.slice(i, Math.min(i + CHUNK_SIZE, rows.length));
+                
+                sql += `INSERT INTO ${tableName} (${mappedFields.join(', ')})\nVALUES\n`;
+                
+                const valuesList = chunk.map(row => {
+                    const values = fields.map((field, index) => {
+                        const value = row[field];
+                        const type = fieldTypes[field];
+
+                        if (value === null || value === undefined) {
+                            return 'NULL';
+                        }
+
+                        switch (type) {
+                            case 'INTEGER':
+                                return typeof value === 'boolean' ? (value ? '1' : '0') : value.toString();
+                            case 'REAL':
+                            case 'NUMERIC':
+                                return value.toString();
+                            default:
+                                return `'${value.toString().replace(/'/g, "''")}'`;
+                        }
+                    });
+                    return `  (${values.join(', ')})`;
+                });
+
+                sql += valuesList.join(',\n');
+                sql += ';\n\n';
+            }
+
+            // Commit transaction
+            sql += 'COMMIT;';
+            
+            return sql;
+        }
+
+        async function generateSQL() {
+            if (!jsonData) return;
+
+            const batchSize = parseInt(document.getElementById('batchSize').value);
+            const totalBatches = Math.ceil(jsonData.length / batchSize);
+            generatedBatches = [];
+            currentBatchIndex = 0;
+
+            const createTableSQL = generateCreateTableSQL();
+            const batchProgress = document.getElementById('batchProgress');
+            const progressBar = document.getElementById('progressBarFill');
+            const batchStatus = document.getElementById('batchStatus');
+            const batchList = document.getElementById('batchList');
+            
+            batchProgress.style.display = 'block';
+            batchList.innerHTML = '';
+
+            for (let i = 0; i < jsonData.length; i += batchSize) {
+                const batchRows = jsonData.slice(i, i + batchSize);
+                const batchSQL = createTableSQL + '\n\n' + generateInsertSQL(batchRows);
+                
+                generatedBatches.push({
+                    sql: batchSQL,
+                    fileName: `${document.getElementById('tableName').value}_batch_${currentBatchIndex + 1}_of_${totalBatches}.sql`
+                });
+
+                // Update progress
+                const progress = ((currentBatchIndex + 1) / totalBatches) * 100;
+                progressBar.style.width = `${progress}%`;
+                batchStatus.textContent = `Generated batch ${currentBatchIndex + 1} of ${totalBatches}`;
+
+                // Add batch to list
+                const batchItem = document.createElement('div');
+                batchItem.className = 'batch-item';
+                batchItem.innerHTML = `
+                    <span>${generatedBatches[currentBatchIndex].fileName}</span>
+                    <button onclick="downloadBatch(${currentBatchIndex})">Download</button>
+                `;
+                batchList.appendChild(batchItem);
+
+                currentBatchIndex++;
+            }
+
+            // Enable buttons
+            document.getElementById('downloadAllButton').disabled = false;
+            document.getElementById('copyButton').disabled = false;
+            document.getElementById('downloadButton').disabled = false;
+
+            // Show first batch in output
+            if (generatedBatches.length > 0) {
+                document.getElementById('output').textContent = generatedBatches[0].sql;
+            }
+        }
+
+        function downloadBatch(index) {
+            const batch = generatedBatches[index];
+            const blob = new Blob([batch.sql], { type: 'text/plain' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = batch.fileName;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }
+
+        function downloadAllBatches() {
+            generatedBatches.forEach((_, index) => {
+                // Small delay between downloads to prevent browser issues
+                setTimeout(() => downloadBatch(index), index * 100);
+            });
+        }
+        </script>
+    </body>
+</html>
