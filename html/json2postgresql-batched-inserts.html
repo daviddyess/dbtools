@@ -55,7 +55,36 @@
         .section {
             margin: 20px 0;
         }
-        .stats-panel, .batch-controls {
+        .stats-panel {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 10px;
+        }
+        .stat-item {
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .stat-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        .stat-value {
+            font-size: 1.1em;
+            font-weight: 500;
+            color: #333;
+        }
+        .batch-controls {
             background: #f8f9fa;
             border: 1px solid #e9ecef;
             border-radius: 4px;
@@ -90,6 +119,13 @@
         
         <div class="section">
             <input type="file" id="jsonFile" accept=".json">
+        </div>
+
+        <div class="stats-panel" id="statsPanel" style="display: none;">
+            <h3>Data Statistics</h3>
+            <div class="stats-grid" id="statsGrid">
+                <!-- Stats will be populated here -->
+            </div>
         </div>
 
         <div class="section">
@@ -247,6 +283,15 @@ CREATE TABLE IF NOT EXISTS ${fullTableName} (
             return sql;
         }
 
+        function formatBytes(bytes, decimals = 2) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const dm = decimals < 0 ? 0 : decimals;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+        }
+
         document.getElementById('jsonFile').addEventListener('change', function(event) {
             const file = event.target.files[0];
             if (file) {
@@ -256,6 +301,7 @@ CREATE TABLE IF NOT EXISTS ${fullTableName} (
                         jsonData = JSON.parse(e.target.result);
                         if (Array.isArray(jsonData) && jsonData.length > 0) {
                             populateFieldSelection(jsonData[0]);
+                            updateStats();
                         }
                     } catch (error) {
                         alert('Error parsing JSON file');
@@ -306,6 +352,7 @@ CREATE TABLE IF NOT EXISTS ${fullTableName} (
                 checkbox.checked = true;
                 checkbox.onchange = () => {
                     selectedFields[field] = checkbox.checked;
+                    updateStats();
                 };
 
                 const nameInput = document.createElement('input');
@@ -313,6 +360,7 @@ CREATE TABLE IF NOT EXISTS ${fullTableName} (
                 nameInput.value = field;
                 nameInput.onchange = () => {
                     fieldMappings[field] = nameInput.value;
+                    updateStats();
                 }
 
                 const typeSelect = document.createElement('select');
@@ -327,6 +375,7 @@ CREATE TABLE IF NOT EXISTS ${fullTableName} (
                 });
                 typeSelect.onchange = () => {
                     fieldTypes[field] = typeSelect.value;
+                    updateStats();
                 };
 
                 row.appendChild(checkbox);
@@ -398,6 +447,99 @@ CREATE TABLE IF NOT EXISTS ${fullTableName} (
                     .then(() => alert('SQL copied to clipboard!'))
                     .catch(err => console.error('Error copying to clipboard:', err));
             }
+        }
+
+        function updateStats() {
+            if (!jsonData || !Array.isArray(jsonData)) return;
+
+            const statsPanel = document.getElementById('statsPanel');
+            const statsGrid = document.getElementById('statsGrid');
+            const existingWarnings = statsPanel.querySelectorAll('.warning');
+            existingWarnings.forEach(warning => warning.remove());
+
+            statsPanel.style.display = 'block';
+            statsGrid.innerHTML = '';
+
+            const stats = [
+                {
+                    label: 'Total Rows',
+                    value: jsonData.length
+                },
+                {
+                    label: 'Total Fields',
+                    value: Object.keys(jsonData[0] || {}).length
+                },
+                {
+                    label: 'Selected Fields',
+                    value: Object.values(selectedFields).filter(v => v).length
+                },
+                {
+                    label: 'Estimated Batches',
+                    value: Math.ceil(jsonData.length / parseInt(document.getElementById('batchSize').value))
+                }
+            ];
+
+            const jsonSize = new Blob([JSON.stringify(jsonData)]).size;
+            stats.push({
+                label: 'JSON Size',
+                value: formatBytes(jsonSize)
+            });
+
+            const typeDistribution = {};
+            Object.values(fieldTypes).forEach(type => {
+                typeDistribution[type] = (typeDistribution[type] || 0) + 1;
+            });
+            
+            const nullCounts = {};
+            Object.keys(jsonData[0] || {}).forEach(field => {
+                nullCounts[field] = jsonData.filter(row => row[field] === null || row[field] === undefined).length;
+            });
+            
+            const fieldsWithNulls = Object.entries(nullCounts)
+                .filter(([_, count]) => count > 0)
+                .length;
+            
+            if (fieldsWithNulls > 0) {
+                stats.push({
+                    label: 'Fields with NULL values',
+                    value: fieldsWithNulls
+                });
+            }
+
+            // Check for potential key fields (unique values)
+            Object.keys(jsonData[0] || {}).forEach(field => {
+                if (!selectedFields[field]) return;
+                
+                const uniqueValues = new Set(jsonData.map(row => row[field])).size;
+                if (uniqueValues === jsonData.length && jsonData.length > 1) {
+                    const warning = document.createElement('div');
+                    warning.className = 'warning';
+                    warning.textContent = `Field '${fieldMappings[field]}' contains all unique values - potential key field`;
+                    statsPanel.appendChild(warning);
+                }
+            });
+
+            // Render stats
+            stats.forEach(stat => {
+                const statItem = document.createElement('div');
+                statItem.className = 'stat-item';
+                statItem.innerHTML = `
+                    <div class="stat-label">${stat.label}</div>
+                    <div class="stat-value">${stat.value}</div>
+                `;
+                statsGrid.appendChild(statItem);
+            });
+
+            // Add type distribution stats
+            Object.entries(typeDistribution).forEach(([type, count]) => {
+                const statItem = document.createElement('div');
+                statItem.className = 'stat-item';
+                statItem.innerHTML = `
+                    <div class="stat-label">Fields of type ${type}</div>
+                    <div class="stat-value">${count}</div>
+                `;
+                statsGrid.appendChild(statItem);
+            });
         }
 
         function downloadSQL() {
